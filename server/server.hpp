@@ -1,5 +1,5 @@
 #pragma once
-#include <socket/socket.h>
+#include <socket/socket.hpp>
 
 class Server {
     public:
