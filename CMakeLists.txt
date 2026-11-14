@@ -12,3 +12,11 @@ add_library(socket STATIC
 target_include_directories(socket PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
 )
+
+add_executable(
+    server
+    server/main.cpp
+    server/server.cpp
+    )
+
+target_link_libraries(server PRIVATE socket)
