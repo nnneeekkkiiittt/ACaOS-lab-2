@@ -20,3 +20,11 @@ add_executable(
     )
 
 target_link_libraries(server PRIVATE socket)
+
+add_executable(
+    client
+    client/main.cpp
+    client/client.cpp
+)
+
+target_link_libraries(client PRIVATE socket)

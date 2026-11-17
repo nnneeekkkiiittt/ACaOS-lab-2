@@ -58,6 +58,8 @@ bool Server::run(int port) {
 
     if (inet_ntop(AF_INET, &clientAddress.sin_addr, clientIP, sizeof(clientIP)) == nullptr) {
         cerr << "Convertation into IP failed: " << strerror(errno) << endl;
+        clientSocket.close();
+        return false;
     }
 
     cout << "Client with address " << (string)clientIP << " connected; listening socket is closing" << endl;
