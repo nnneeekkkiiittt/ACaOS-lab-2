@@ -20,8 +20,8 @@ Socket::~Socket(){
 bool Socket::createTCP() {
     if (isOpen()) return false;
 
-    // AF_INET - IPv4 адреса, SOCK_STREAM - TCP протокол, 0 - протокол по умолчанию
-    fd = socket(AF_INET, SOCK_STREAM, 0);
+    // AF_INET - IPv4 адреса, SOCK_STREAM - TCP протокол, IPPROTO_TCP - протокол по умолчанию
+    fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     return isOpen(); 
 }
 
