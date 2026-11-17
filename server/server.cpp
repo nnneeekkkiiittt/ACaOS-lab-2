@@ -4,6 +4,7 @@
 #include <iostream>
 #include <cerrno>
 #include <cstring>
+#include <arpa/inet.h>
 
 using namespace std;
 
@@ -15,29 +16,34 @@ bool Server::run(int port) {
 
     int reuse_allowed = 1;
 
+    // включаем переиспользование локального адреса
     if (setsockopt(listeningSocket.getFd(), SOL_SOCKET, SO_REUSEADDR, &reuse_allowed, sizeof(reuse_allowed)) == -1) {
         cerr << "Setsockopt failed: " << strerror(errno) << endl;
         return false;
     }
 
-    sockaddr_in address{};
+    sockaddr_in serverAddress{};
 
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    address.sin_addr.s_addr = INADDR_ANY;
+    serverAddress.sin_family = AF_INET; //ipv4
+    serverAddress.sin_port = htons(port); //htons (host to network short) - потому что в сетевых протоколах старший байт идет первым
+    serverAddress.sin_addr.s_addr = INADDR_ANY; // все локальные ip адреса
 
-    if (bind(listeningSocket.getFd(), reinterpret_cast<sockaddr*>(&address), sizeof(address)) == -1) {
+    if (bind(listeningSocket.getFd(), reinterpret_cast<sockaddr*>(&serverAddress), sizeof(serverAddress)) == -1) {
         cerr << "Listening failed: " << strerror(errno) << endl;
         return false;
     }
 
-    if (listen(listeningSocket.getFd(), 1) == -1) {
+    if (listen(listeningSocket.getFd(), 1) == -1) { // 1 - параметр backlog
         cerr << "Listening failed: " << strerror(errno) << endl;
     }
 
     cout << "Server is listening for a client on a port " << port << endl;
 
-    int cliendFd = accept(listeningSocket.getFd(), nullptr, nullptr);
+    sockaddr_in clientAddress{};
+
+    socklen_t sizeOfClientAddress = sizeof(clientAddress);
+
+    int cliendFd = accept(listeningSocket.getFd(), reinterpret_cast<sockaddr*>(&clientAddress), &sizeOfClientAddress);
     
     if(cliendFd == -1) {
         cerr << "Accept of a client failed: " << strerror(errno) << endl;
@@ -48,7 +54,13 @@ bool Server::run(int port) {
 
     listeningSocket.close();
 
-    cout << "Client connected; listening socket is closing" << endl;
+    char clientIP[INET_ADDRSTRLEN]{};
+
+    if (inet_ntop(AF_INET, &clientAddress.sin_addr, clientIP, sizeof(clientIP)) == nullptr) {
+        cerr << "Convertation into IP failed: " << strerror(errno) << endl;
+    }
+
+    cout << "Client with address " << (string)clientIP << " connected; listening socket is closing" << endl;
 
     return true;
 }
