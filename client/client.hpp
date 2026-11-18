@@ -4,6 +4,7 @@
 class Client {
     public:
         bool connectToServer(const char* ip, int port);
+        bool ping();
     private:
         Socket socket;
 };

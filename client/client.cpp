@@ -4,6 +4,8 @@
 #include <iostream>
 #include <cerrno>
 #include <cstring>
+#include <sys/socket.h>
+#include <sys/types.h>
 
 using namespace std;
 
@@ -41,4 +43,35 @@ bool Client::connectToServer(const char* ip, int port) {
     cout << "Connected to server with address " << (string)serverIP << endl; 
 
     return true;
+}
+
+bool Client::ping() {
+        const char message[] = "ping";
+
+        const size_t messageSize = sizeof(message) - 1; // вычитаем нулевой байт
+
+        size_t sentBytes = 0;
+
+        while (sentBytes < messageSize) {
+            ssize_t bytes = ::send(socket.getFd(), message + sentBytes, messageSize - sentBytes, MSG_NOSIGNAL);
+
+            if (bytes == -1) {
+                if (errno == EINTR) continue;
+
+                cerr << "Ping failed: " << strerror(errno) << endl;
+
+                return false;
+            }
+
+            if (bytes == 0) {
+                cerr << "Connection has been lost" << endl;
+                return false;
+            }
+
+            sentBytes += static_cast<size_t>(bytes);
+        }
+
+        cout << "Ping sent" << endl;
+
+        return true;
 }

@@ -19,5 +19,11 @@ int main() {
     }
 
     cout << "succesfully connected to server" << endl;
+
+    if (!client.ping()) {
+        cerr << "Failed to send ping" << endl;
+        return 1;
+    }
+    
     return 0;
 }
