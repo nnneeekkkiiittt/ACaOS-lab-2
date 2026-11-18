@@ -6,6 +6,7 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
+#include <string>
 
 using namespace std;
 
@@ -67,6 +68,29 @@ bool Server::run(int port) {
     }
 
     cout << "Client with address " << (string)clientIP << " connected; listening socket is closing" << endl;
+
+    char buffer[4]{};
+
+    size_t receivedBytes = 0;
+
+    while (receivedBytes < sizeof(buffer)) {
+        ssize_t bytes = ::recv(cliendFd, buffer + receivedBytes, sizeof(buffer) - receivedBytes, MSG_NOSIGNAL);
+        if (bytes == -1) {
+            if (errno == EINTR) continue;
+
+            cerr << "Failed to receive ping: " << strerror(errno) << endl;
+            return false;
+        }
+
+        if (bytes == 0) {
+            cerr << "Connection has been lost" << endl;
+            return false;
+        }
+
+        receivedBytes += static_cast<size_t>(bytes);
+    }
+
+    cout << "Received message " << string(buffer, sizeof(buffer)) << endl;
 
     return true;
 }
