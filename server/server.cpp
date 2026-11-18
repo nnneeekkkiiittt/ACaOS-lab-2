@@ -90,7 +90,40 @@ bool Server::run(int port) {
         receivedBytes += static_cast<size_t>(bytes);
     }
 
-    cout << "Received message " << string(buffer, sizeof(buffer)) << endl;
+    string msg(buffer, sizeof(buffer));
+
+    cout << "Received message " << msg << endl;
+
+    if (msg != "ping") {
+        cerr << "Unknown message: " << msg << ". Should be 'ping'" << endl;
+        return false;
+    }
+
+    const char message[] = "pong";
+
+    size_t responseSize = sizeof(message) - 1;
+
+    size_t sentBytes = 0;
+
+    while (sentBytes < responseSize) {
+        ssize_t bytes = ::send(cliendFd, message + sentBytes, responseSize - sentBytes, MSG_NOSIGNAL);
+
+        if (bytes == -1) {
+            if (errno == EINTR) continue;
+
+            cerr << "Pong sending failed: " << strerror(errno) << endl;
+            return false;
+        }
+
+        if (bytes == 0) {
+            cerr << "Connection has been lost" << endl;
+            return false;
+        }
+
+        sentBytes += static_cast<size_t>(bytes);
+    }
+
+    cout << "Successfully sent " << message << endl;
 
     return true;
 }
