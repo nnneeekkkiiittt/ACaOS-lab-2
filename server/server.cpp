@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstring>
 #include <arpa/inet.h>
+#include <netinet/tcp.h>
 
 using namespace std;
 
@@ -51,6 +52,9 @@ bool Server::run(int port) {
     }
 
     Socket clientSocket(cliendFd);
+
+    int f = 1;
+    setsockopt(cliendFd, IPPROTO_TCP, TCP_NODELAY, &f, sizeof(f)); // ускорение за счет отключение алгоритма Нейгла
 
     listeningSocket.close();
 
