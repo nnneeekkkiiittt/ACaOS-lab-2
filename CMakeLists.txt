@@ -5,6 +5,10 @@ project(ACaOS-lab-2 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+add_compile_options(-Wall -Wextra)
+
+find_package(Threads REQUIRED)
+
 add_library(socket STATIC
     socket/socket.cpp
 )
@@ -34,3 +38,5 @@ add_library(history STATIC history/history.cpp)
 target_include_directories(history PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 target_link_libraries(server PRIVATE history)
+
+target_link_libraries(server PRIVATE Threads::Threads)
