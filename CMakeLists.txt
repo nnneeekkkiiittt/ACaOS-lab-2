@@ -28,3 +28,9 @@ add_executable(
 )
 
 target_link_libraries(client PRIVATE socket)
+
+add_library(history STATIC history/history.cpp)
+
+target_include_directories(history PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+target_link_libraries(server PRIVATE history)

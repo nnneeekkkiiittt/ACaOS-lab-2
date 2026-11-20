@@ -7,8 +7,11 @@
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <string>
+#include <history/history.hpp>
 
 using namespace std;
+
+const string filename = "history.log";
 
 bool Server::run(int port) {
     if (!listeningSocket.createTCP()) {
@@ -93,6 +96,22 @@ bool Server::run(int port) {
     string msg(buffer, sizeof(buffer));
 
     cout << "Received message " << msg << endl;
+
+    if (!writeHistory(filename, "CLIENT " + (string)clientIP, msg)) {
+        cerr << "Failed to write message in history" << endl;
+        return false;
+    }
+
+    vector<string> messages;
+
+    if (!getHistory(filename, messages)) {
+        cerr << "Failed to show history" << endl;
+        return false;
+    }
+
+    for (string message : messages) {
+        cout << message << endl;
+    }
 
     if (msg != "ping") {
         cerr << "Unknown message: " << msg << ". Should be 'ping'" << endl;
