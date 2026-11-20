@@ -10,7 +10,12 @@ Socket::Socket() {
 }
 
 Socket::Socket(int fd) {
-    fd = fd;
+    this->fd = fd;
+}
+
+Socket::Socket(Socket&& other) noexcept { // для обработки move(clientSocket)
+    fd = other.fd;
+    other.fd = -1;
 }
 
 Socket::~Socket(){
@@ -25,11 +30,11 @@ bool Socket::createTCP() {
     return isOpen(); 
 }
 
-int Socket::getFd() {
+int Socket::getFd() const {
     return fd;
 }
 
-bool Socket::isOpen() {
+bool Socket::isOpen() const {
     return fd != -1;
 }
 

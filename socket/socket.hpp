@@ -6,6 +6,8 @@ class Socket {
 
         explicit Socket(int fd);
 
+        Socket(Socket&& other) noexcept;
+
         ~Socket();
 
         Socket(const Socket&) = delete; //сокет с одним и тем же fd ни в коем случае нельзя копировать
@@ -13,9 +15,9 @@ class Socket {
 
         bool createTCP();
 
-        int getFd();
+        int getFd() const;
 
-        bool isOpen();
+        bool isOpen() const;
 
         void close();
 
