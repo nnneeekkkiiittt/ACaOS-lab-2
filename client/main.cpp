@@ -14,7 +14,7 @@ int main() {
     Client client;
 
     if (!client.connectToServer(serverIP, port)) {
-        cerr << "failed to connect to server: " << strerror(errno) << endl;
+        cerr << "failed to connect to server" << endl;
         return 1;
     }
 

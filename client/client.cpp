@@ -6,9 +6,12 @@
 #include <cstring>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/time.h>
 #include <string>
 
 using namespace std;
+
+const int timeoutSeconds = 30;
 
 bool Client::connectToServer(const char* ip, int port) {
     sockaddr_in serverAddress{};
@@ -17,12 +20,22 @@ bool Client::connectToServer(const char* ip, int port) {
     serverAddress.sin_port = htons(port);
 
     if (inet_pton(AF_INET, ip, &serverAddress.sin_addr) != 1) {
-        cerr << "invalid server's IP address: " << strerror(errno) << endl;
+        cerr << "invalid server's IP address" << endl;
         return false;
     }
 
     if (!socket.createTCP()) {
         cerr << "failed to create client TCP socket: " << strerror(errno) << endl;
+        return false;
+    }
+
+    timeval timeout{};
+    timeout.tv_sec = timeoutSeconds;
+
+    if (setsockopt(socket.getFd(), SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1 ||
+        setsockopt(socket.getFd(), SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == -1) {
+        cerr << "failed to set socket timeouts: " << strerror(errno) << endl;
+        socket.close();
         return false;
     }
 
@@ -59,6 +72,11 @@ bool Client::ping() {
             if (bytes == -1) {
                 if (errno == EINTR) continue;
 
+                if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                    cerr << "Ping timed out" << endl;
+                    return false;
+                }
+
                 cerr << "Ping failed: " << strerror(errno) << endl;
 
                 return false;
@@ -87,6 +105,11 @@ bool Client::receivePong() {
 
         if (bytes == -1) {
             if (errno == EINTR) continue;
+
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                cerr << "Pong timed out" << endl;
+                return false;
+            }
 
             cerr << "Failed to receive pong: " << strerror(errno) << endl;
             return false;
