@@ -4,11 +4,13 @@
 #include <cerrno>
 #include <cstring>
 
+using namespace std;
+
 int main() {
     Server server;
 
     if (!server.run(8080)) {
-        std::cerr << "Server stopped: " << std::strerror(errno) << std::endl;
+        cerr << "Server stopped because of an error" << endl;
         return 1;
     }
 

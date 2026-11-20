@@ -1,9 +1,16 @@
 #include <server/server.hpp>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <netinet/in.h>
 #include <iostream>
 #include <cerrno>
 #include <cstring>
+#include <csignal>
+#include <chrono>
+#include <exception>
+#include <thread>
+#include <vector>
+#include <poll.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <string>
@@ -12,6 +19,18 @@
 using namespace std;
 
 const string filename = "history.log";
+
+const size_t maxClients = 64;
+
+const int clientTimeoutSeconds = 30;
+
+const int shutdownWaitSeconds = 5;
+
+volatile sig_atomic_t stopRequested = 0;
+
+static void onSignal(int) {
+    stopRequested = 1;
+}
 
 bool Server::run(int port) {
     if (!listeningSocket.createTCP()) {
@@ -38,56 +57,154 @@ bool Server::run(int port) {
         return false;
     }
 
-    if (listen(listeningSocket.getFd(), 1) == -1) { // 1 - параметр backlog
+    if (listen(listeningSocket.getFd(), SOMAXCONN) == -1) {
         cerr << "Listening failed: " << strerror(errno) << endl;
-    }
-
-    cout << "Server is listening for a client on a port " << port << endl;
-
-    sockaddr_in clientAddress{};
-
-    socklen_t sizeOfClientAddress = sizeof(clientAddress);
-
-    int cliendFd = accept(listeningSocket.getFd(), reinterpret_cast<sockaddr*>(&clientAddress), &sizeOfClientAddress);
-    
-    if(cliendFd == -1) {
-        cerr << "Accept of a client failed: " << strerror(errno) << endl;
         return false;
     }
 
-    Socket clientSocket(cliendFd);
+    stopRequested = 0;
 
-    int f = 1;
-    setsockopt(cliendFd, IPPROTO_TCP, TCP_NODELAY, &f, sizeof(f)); // ускорение за счет отключение алгоритма Нейгла
+    if (signal(SIGINT, onSignal) == SIG_ERR || signal(SIGTERM, onSignal) == SIG_ERR) {
+        cerr << "Failed to set signal handlers: " << strerror(errno) << endl;
+        return false;
+    }
+
+    cout << "Server is listening for clients on a port " << port << endl;
+
+    bool isWorking = true;
+
+    while (!stopRequested) {
+        pollfd listeningPollFd{};
+
+        listeningPollFd.fd = listeningSocket.getFd();
+        listeningPollFd.events = POLLIN;
+
+        int ready = poll(&listeningPollFd, 1, 1000); // 1 дескриптор, таймаут секунда
+
+        if (ready == -1) { // системный сигнал
+            if (errno == EINTR) continue;
+
+            cerr << "Poll failed: " << strerror(errno) << endl;
+            isWorking = false;
+            break;
+        }
+
+        if (ready == 0) continue; // таймаут
+
+        sockaddr_in clientAddress{};
+
+        socklen_t sizeOfClientAddress = sizeof(clientAddress);
+
+        int clientFd = accept(listeningSocket.getFd(), reinterpret_cast<sockaddr*>(&clientAddress), &sizeOfClientAddress);
+
+        if (clientFd == -1) {
+            if (errno == EINTR || errno == ECONNABORTED) continue;
+
+            cerr << "Accept of a client failed: " << strerror(errno) << endl;
+            isWorking = false;
+            break;
+        }
+
+        Socket clientSocket(clientFd);
+
+        int f = 1;
+        setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &f, sizeof(f)); // ускорение за счет отключение алгоритма Нейгла
+
+        timeval timeout{};
+        timeout.tv_sec = clientTimeoutSeconds;
+
+        if (setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1 || // таймаут на receive и на send
+            setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == -1) {
+            cerr << "Failed to set client timeouts: " << strerror(errno) << endl;
+            continue;
+        }
+
+        char clientIP[INET_ADDRSTRLEN]{};
+
+        if (inet_ntop(AF_INET, &clientAddress.sin_addr, clientIP, sizeof(clientIP)) == nullptr) {
+            cerr << "Convertation into IP failed: " << strerror(errno) << endl;
+            continue;
+        }
+
+        cout << "Client with address " << (string)clientIP << " connected" << endl;
+
+        {
+            lock_guard<mutex> lock(clientsMutex);
+
+            if (clientFds.size() >= maxClients) {
+                cerr << "Too many clients, rejecting " << (string)clientIP << endl;
+                continue;
+            }
+
+            clientFds.insert(clientFd);
+        }
+
+        try {
+            thread(&Server::handleClient, this, std::move(clientSocket), string(clientIP)).detach();
+        } catch (const exception& error) {
+            cerr << "Failed to start a thread for client " << (string)clientIP << ": " << error.what() << endl;
+
+            lock_guard<mutex> lock(clientsMutex);
+            clientFds.erase(clientFd);
+        }
+    }
 
     listeningSocket.close();
 
-    char clientIP[INET_ADDRSTRLEN]{};
+    { // после } - автоматический unlock()
+        unique_lock<mutex> lock(clientsMutex);
 
-    if (inet_ntop(AF_INET, &clientAddress.sin_addr, clientIP, sizeof(clientIP)) == nullptr) {
-        cerr << "Convertation into IP failed: " << strerror(errno) << endl;
-        clientSocket.close();
-        return false;
+        for (int fd : clientFds) {
+            shutdown(fd, SHUT_RDWR);
+        }
+
+        if (!clientsDone.wait_for(lock, chrono::seconds(shutdownWaitSeconds), [this] { return clientFds.empty(); })) {
+            cerr << "Some clients did not finish in time" << endl;
+            isWorking = false;
+        }
     }
 
-    cout << "Client with address " << (string)clientIP << " connected; listening socket is closing" << endl;
+    cout << "Server stopped" << endl;
 
+    return isWorking;
+}
+
+void Server::handleClient(Socket clientSocket, string clientIP) {
+    int clientFd = clientSocket.getFd();
+
+    try {
+        serveClient(clientFd, clientIP);
+    } catch (const exception& error) {
+        cerr << "Client " << clientIP << " failed: " << error.what() << endl;
+    }
+
+    lock_guard<mutex> lock(clientsMutex);
+    clientFds.erase(clientFd);
+    clientsDone.notify_all();
+}
+
+void Server::serveClient(int clientFd, const string& clientIP) {
     char buffer[4]{};
 
     size_t receivedBytes = 0;
 
     while (receivedBytes < sizeof(buffer)) {
-        ssize_t bytes = ::recv(cliendFd, buffer + receivedBytes, sizeof(buffer) - receivedBytes, MSG_NOSIGNAL);
+        ssize_t bytes = ::recv(clientFd, buffer + receivedBytes, sizeof(buffer) - receivedBytes, MSG_NOSIGNAL);
         if (bytes == -1) {
             if (errno == EINTR) continue;
 
-            cerr << "Failed to receive ping: " << strerror(errno) << endl;
-            return false;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) { // таймауты
+                cerr << "Client " << clientIP << " timed out" << endl;
+                return;
+            }
+
+            cerr << "Failed to receive ping from " << clientIP << ": " << strerror(errno) << endl;
+            return;
         }
 
         if (bytes == 0) {
-            cerr << "Connection has been lost" << endl;
-            return false;
+            cerr << "Connection with " << clientIP << " has been lost" << endl;
+            return;
         }
 
         receivedBytes += static_cast<size_t>(bytes);
@@ -95,27 +212,31 @@ bool Server::run(int port) {
 
     string msg(buffer, sizeof(buffer));
 
-    cout << "Received message " << msg << endl;
+    cout << "Received message " << msg << " from " << clientIP << endl;
 
-    if (!writeHistory(filename, "CLIENT " + (string)clientIP, msg)) {
-        cerr << "Failed to write message in history" << endl;
-        return false;
-    }
+    {
+        lock_guard<mutex> lock(historyMutex);
 
-    vector<string> messages;
+        if (!writeHistory(filename, "CLIENT " + clientIP, msg)) {
+            cerr << "Failed to write message in history" << endl;
+            return;
+        }
 
-    if (!getHistory(filename, messages)) {
-        cerr << "Failed to show history" << endl;
-        return false;
-    }
+        vector<string> messages;
 
-    for (string message : messages) {
-        cout << message << endl;
+        if (!getHistory(filename, messages)) {
+            cerr << "Failed to show history" << endl;
+            return;
+        }
+
+        for (const string& message : messages) {
+            cout << message << endl;
+        }
     }
 
     if (msg != "ping") {
-        cerr << "Unknown message: " << msg << ". Should be 'ping'" << endl;
-        return false;
+        cerr << "Unknown message: " << msg << " from " << clientIP << ". Should be 'ping'" << endl;
+        return;
     }
 
     const char message[] = "pong";
@@ -125,24 +246,27 @@ bool Server::run(int port) {
     size_t sentBytes = 0;
 
     while (sentBytes < responseSize) {
-        ssize_t bytes = ::send(cliendFd, message + sentBytes, responseSize - sentBytes, MSG_NOSIGNAL);
+        ssize_t bytes = ::send(clientFd, message + sentBytes, responseSize - sentBytes, MSG_NOSIGNAL);
 
         if (bytes == -1) {
             if (errno == EINTR) continue;
 
-            cerr << "Pong sending failed: " << strerror(errno) << endl;
-            return false;
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                cerr << "Client " << clientIP << " timed out" << endl;
+                return;
+            }
+
+            cerr << "Pong sending to " << clientIP << " failed: " << strerror(errno) << endl;
+            return;
         }
 
         if (bytes == 0) {
-            cerr << "Connection has been lost" << endl;
-            return false;
+            cerr << "Connection with " << clientIP << " has been lost" << endl;
+            return;
         }
 
         sentBytes += static_cast<size_t>(bytes);
     }
 
-    cout << "Successfully sent " << message << endl;
-
-    return true;
+    cout << "Successfully sent " << message << " to " << clientIP << endl;
 }
