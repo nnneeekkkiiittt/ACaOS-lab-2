@@ -6,6 +6,7 @@
 #include <cstring>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <string>
 
 using namespace std;
 
@@ -74,4 +75,39 @@ bool Client::ping() {
         cout << "Ping sent" << endl;
 
         return true;
+}
+
+bool Client::receivePong() {
+    char buffer[4]{};
+
+    size_t receivedBytes = 0;
+
+    while (receivedBytes < sizeof(buffer)) {
+        ssize_t bytes = ::recv(socket.getFd(), buffer + receivedBytes, sizeof(buffer) - receivedBytes, MSG_NOSIGNAL);
+
+        if (bytes == -1) {
+            if (errno == EINTR) continue;
+
+            cerr << "Failed to receive pong: " << strerror(errno) << endl;
+            return false;
+        }
+
+        if (bytes == 0) {
+            cerr << "Connection has been lost" << endl;
+            return false;
+        }
+
+        receivedBytes += static_cast<size_t>(bytes);
+    }
+
+    string msg(buffer, sizeof(buffer));
+
+    if (msg != "pong") {
+        cerr << "Unknown message: " << msg << " . Should be 'pong'" << endl;
+        return false;
+    }
+
+    cout << "Received message " << msg << endl;
+
+    return true;
 }

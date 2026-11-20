@@ -25,5 +25,10 @@ int main() {
         return 1;
     }
     
+    if (!client.receivePong()) {
+        cerr << "Failed to receive pong" << endl;
+        return 1;
+    }
+
     return 0;
 }
