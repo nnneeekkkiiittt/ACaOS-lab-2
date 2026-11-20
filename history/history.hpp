@@ -2,8 +2,6 @@
 #include <string>
 #include <vector>
 
-using namespace std;
+bool writeHistory(const std::string& filename, const std::string& author, const std::string& message);
 
-bool writeHistory(const string& filename, const string& author, const string& message);
-
-bool getHistory(const string& filename, vector<string>& messages);
+bool getHistory(const std::string& filename, std::vector<std::string>& messages);

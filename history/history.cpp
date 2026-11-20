@@ -6,6 +6,7 @@
 #include <cerrno>
 #include <iomanip>
 #include <filesystem>
+#include <ctime>
 
 using namespace std;
 
@@ -18,13 +19,13 @@ bool writeHistory(const string& filename, const string& author, const string& me
     }
 
     time_t time = std::time(nullptr);
-    tm* localTime = localtime(&time);
-    if (localtime == nullptr) {
+    tm localTime{};
+    if (localtime_r(&time, &localTime) == nullptr) {
         cerr << "Failed to fetch local time" << endl;
         return false;
     }
 
-    historyFile << "[" << put_time(localTime, "%Y-%m-%d %H:%M:%S") << "] " << author << ": " << message << endl;
+    historyFile << "[" << put_time(&localTime, "%Y-%m-%d %H:%M:%S") << "] " << author << ": " << message << endl;
 
     historyFile.flush();
 
