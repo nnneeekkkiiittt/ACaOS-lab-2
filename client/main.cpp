@@ -20,14 +20,9 @@ int main() {
 
     cout << "succesfully connected to server" << endl;
 
-    if (!client.ping()) {
-        cerr << "Failed to send ping" << endl;
-        return 1;
-    }
-    
-    if (!client.receivePong()) {
-        cerr << "Failed to receive pong" << endl;
-        return 1;
+    if (!client.runChat()) {
+    cerr << "Chat stopped because of an error" << endl;
+    return 1;
     }
 
     return 0;
