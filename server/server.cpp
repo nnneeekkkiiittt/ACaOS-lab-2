@@ -22,14 +22,97 @@ const string filename = "history.log";
 
 const size_t maxClients = 64;
 
-const int clientTimeoutSeconds = 30;
+const size_t maxMessageSize = 64 * 1024;
 
-const int shutdownWaitSeconds = 5;
+const int clientSendTimeoutSeconds = 30;
 
 volatile sig_atomic_t stopRequested = 0;
 
 static void onSignal(int) {
     stopRequested = 1;
+}
+
+bool Server::sendMessage(int clientFd, const string& message) {
+    if (message.size() > maxMessageSize) {
+        cerr << "Message is too large" << endl;
+        return false;
+    }
+
+    string frame = message;
+    frame += '\0';
+
+    size_t sentBytes = 0;
+
+    while (sentBytes < frame.size()) {
+        ssize_t bytes = ::send(clientFd, frame.data() + sentBytes, frame.size() - sentBytes, MSG_NOSIGNAL);
+
+        if (bytes == -1) {
+            if (errno == EINTR) continue;
+
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                cerr << "Sending message to client timed out" << endl;
+                return false;
+            }
+
+            cerr << "Failed to send message to client: " << strerror(errno) << endl;
+            return false;
+        }
+
+        if (bytes == 0) {
+            cerr << "Connection with client has been lost" << endl;
+            return false;
+        }
+
+        sentBytes += static_cast<size_t>(bytes);
+    }
+
+    return true;
+}
+
+bool Server::receiveMessage(int clientFd, string& pending, string& message, const string& clientIP) {
+    while (true) {
+        size_t separator = pending.find('\0');
+
+        if (separator != string::npos) {
+            if (separator > maxMessageSize) {
+                cerr << "Message from " << clientIP << " is too large" << endl;
+                return false;
+            }
+
+            message = pending.substr(0, separator);
+            pending.erase(0, separator + 1);
+
+            return true;
+        }
+
+        if (pending.size() > maxMessageSize) {
+            cerr << "Message from " << clientIP << " is too large" << endl;
+            return false;
+        }
+
+        char buffer[4096];
+
+        ssize_t bytes = ::recv(clientFd, buffer, sizeof(buffer), 0);
+
+        if (bytes == -1) {
+            if (errno == EINTR) continue;
+
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                cerr << "Client " << clientIP << " timed out" << endl;
+                return false;
+            }
+
+            cerr << "Failed to receive message from " << clientIP << ": " << strerror(errno) << endl;
+            return false;
+        }
+
+        if (bytes == 0) {
+            cerr << "Connection with " << clientIP << " has been lost" << endl;
+            return false;
+        }
+
+        pending.append(buffer, static_cast<size_t>(bytes));
+    }
 }
 
 bool Server::run(int port) {
@@ -74,6 +157,9 @@ bool Server::run(int port) {
     bool isWorking = true;
 
     while (!stopRequested) {
+
+        reapClientThreads();
+
         pollfd listeningPollFd{};
 
         listeningPollFd.fd = listeningSocket.getFd();
@@ -90,6 +176,14 @@ bool Server::run(int port) {
         }
 
         if (ready == 0) continue; // таймаут
+
+        if (listeningPollFd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+            cerr << "Listening socket failed" << endl;  
+            isWorking = false;
+        break;
+        }
+
+        if (!(listeningPollFd.revents & POLLIN)) continue;
 
         sockaddr_in clientAddress{};
 
@@ -108,13 +202,15 @@ bool Server::run(int port) {
         Socket clientSocket(clientFd);
 
         int f = 1;
-        setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &f, sizeof(f)); // ускорение за счет отключение алгоритма Нейгла
+        if (setsockopt(clientFd, IPPROTO_TCP, TCP_NODELAY, &f, sizeof(f)) == -1) { // ускорение за счет отключение алгоритма Нейгла
+            cerr << "Failed to set TCP_NODELAY: " << strerror(errno) << endl;
+            continue;
+        }
 
         timeval timeout{};
-        timeout.tv_sec = clientTimeoutSeconds;
+        timeout.tv_sec = clientSendTimeoutSeconds;
 
-        if (setsockopt(clientFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == -1 || // таймаут на receive и на send
-            setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == -1) {
+        if (setsockopt(clientFd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) == -1) {
             cerr << "Failed to set client timeouts: " << strerror(errno) << endl;
             continue;
         }
@@ -140,7 +236,7 @@ bool Server::run(int port) {
         }
 
         try {
-            thread(&Server::handleClient, this, std::move(clientSocket), string(clientIP)).detach();
+            clientThreads.push_back(make_pair(clientFd, thread(&Server::handleClient, this, std::move(clientSocket), string(clientIP))));
         } catch (const exception& error) {
             cerr << "Failed to start a thread for client " << (string)clientIP << ": " << error.what() << endl;
 
@@ -151,22 +247,43 @@ bool Server::run(int port) {
 
     listeningSocket.close();
 
-    { // после } - автоматический unlock()
-        unique_lock<mutex> lock(clientsMutex);
+    { // закрывающая } автоматически вызывает unlock
+    lock_guard<mutex> lock(clientsMutex);
 
-        for (int fd : clientFds) {
-            shutdown(fd, SHUT_RDWR);
-        }
+    for (int fd : clientFds) {
+        shutdown(fd, SHUT_RDWR);
+    }
+    }
 
-        if (!clientsDone.wait_for(lock, chrono::seconds(shutdownWaitSeconds), [this] { return clientFds.empty(); })) {
-            cerr << "Some clients did not finish in time" << endl;
-            isWorking = false;
+    for (pair<int, thread>& clientThread : clientThreads) {
+        if (clientThread.second.joinable()) {
+            clientThread.second.join();
         }
     }
+
+    clientThreads.clear();
 
     cout << "Server stopped" << endl;
 
     return isWorking;
+}
+
+void Server::reapClientThreads() {
+    lock_guard<mutex> lock(clientsMutex);
+
+    auto iterator = clientThreads.begin();
+
+    while (iterator != clientThreads.end()) {
+        if (clientFds.find(iterator->first) == clientFds.end()) {
+            if (iterator->second.joinable()) {
+                iterator->second.join();
+            }
+
+            iterator = clientThreads.erase(iterator);
+        } else {
+            ++iterator;
+        }
+    }
 }
 
 void Server::handleClient(Socket clientSocket, string clientIP) {
@@ -180,93 +297,65 @@ void Server::handleClient(Socket clientSocket, string clientIP) {
 
     lock_guard<mutex> lock(clientsMutex);
     clientFds.erase(clientFd);
-    clientsDone.notify_all();
 }
 
 void Server::serveClient(int clientFd, const string& clientIP) {
-    char buffer[4]{};
+    string pending;
 
-    size_t receivedBytes = 0;
+    while (true) {
+        string message;
 
-    while (receivedBytes < sizeof(buffer)) {
-        ssize_t bytes = ::recv(clientFd, buffer + receivedBytes, sizeof(buffer) - receivedBytes, MSG_NOSIGNAL);
-        if (bytes == -1) {
-            if (errno == EINTR) continue;
+        if (!receiveMessage(clientFd, pending, message, clientIP)) return;
 
-            if (errno == EAGAIN || errno == EWOULDBLOCK) { // таймауты
-                cerr << "Client " << clientIP << " timed out" << endl;
+        if (message.empty()) continue;
+
+        if (message == "/quit") return;
+
+        if (message == "/history") {
+            vector<string> messages;
+
+            {
+                lock_guard<mutex> lock(historyMutex);
+
+                if (!getHistory(filename, messages)) {
+                    cerr << "Failed to get chat history" << endl;
+                    return;
+                }
+            }
+
+            if (messages.empty()) {
+                if (!sendMessage(clientFd, "Chat history is empty")) return;
+            } else {
+                for (const string& historyMessage : messages) {
+                    if (!sendMessage(clientFd, historyMessage)) return;
+                }
+            }
+
+
+            continue;
+        }
+
+        cout << "Received message " << message << " from " << clientIP << endl;
+
+        string response = message == "ping" ? "pong" : message;
+        string serverMessage = "SERVER: " + response;
+
+        {
+            lock_guard<mutex> lock(historyMutex);
+
+            if (!writeHistory(filename, "CLIENT " + clientIP, message)) {
+                cerr << "Failed to write message in history" << endl;
                 return;
             }
 
-            cerr << "Failed to receive ping from " << clientIP << ": " << strerror(errno) << endl;
-            return;
-        }
-
-        if (bytes == 0) {
-            cerr << "Connection with " << clientIP << " has been lost" << endl;
-            return;
-        }
-
-        receivedBytes += static_cast<size_t>(bytes);
-    }
-
-    string msg(buffer, sizeof(buffer));
-
-    cout << "Received message " << msg << " from " << clientIP << endl;
-
-    {
-        lock_guard<mutex> lock(historyMutex);
-
-        if (!writeHistory(filename, "CLIENT " + clientIP, msg)) {
-            cerr << "Failed to write message in history" << endl;
-            return;
-        }
-
-        vector<string> messages;
-
-        if (!getHistory(filename, messages)) {
-            cerr << "Failed to show history" << endl;
-            return;
-        }
-
-        for (const string& message : messages) {
-            cout << message << endl;
-        }
-    }
-
-    if (msg != "ping") {
-        cerr << "Unknown message: " << msg << " from " << clientIP << ". Should be 'ping'" << endl;
-        return;
-    }
-
-    const char message[] = "pong";
-
-    size_t responseSize = sizeof(message) - 1;
-
-    size_t sentBytes = 0;
-
-    while (sentBytes < responseSize) {
-        ssize_t bytes = ::send(clientFd, message + sentBytes, responseSize - sentBytes, MSG_NOSIGNAL);
-
-        if (bytes == -1) {
-            if (errno == EINTR) continue;
-
-            if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                cerr << "Client " << clientIP << " timed out" << endl;
+            if (!writeHistory(filename, "SERVER", response)) {
+                cerr << "Failed to write server response in history" << endl;
                 return;
             }
-
-            cerr << "Pong sending to " << clientIP << " failed: " << strerror(errno) << endl;
-            return;
         }
 
-        if (bytes == 0) {
-            cerr << "Connection with " << clientIP << " has been lost" << endl;
-            return;
-        }
+        if (!sendMessage(clientFd, serverMessage)) return;
 
-        sentBytes += static_cast<size_t>(bytes);
-    }
-
-    cout << "Successfully sent " << message << " to " << clientIP << endl;
+        cout << "Successfully sent " << serverMessage << " to " << clientIP << endl;
+}
 }
