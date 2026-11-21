@@ -40,3 +40,5 @@ target_include_directories(history PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(server PRIVATE history)
 
 target_link_libraries(server PRIVATE Threads::Threads)
+
+target_link_libraries(client PRIVATE Threads::Threads)
